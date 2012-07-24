@@ -1,4 +1,4 @@
-EESchema Schematic File Version 2  date Monday 23,July,2012 01:23:55 PM SGT
+EESchema Schematic File Version 2  date Tuesday 24,July,2012 09:15:29 AM SGT
 LIBS:power
 LIBS:device
 LIBS:transistors
@@ -29,7 +29,6 @@ LIBS:opto
 LIBS:atmel
 LIBS:contrib
 LIBS:valves
-LIBS:mine
 LIBS:RT-8p8c-cache
 EELAYER 25  0
 EELAYER END
@@ -37,7 +36,7 @@ $Descr A4 11700 8267
 encoding utf-8
 Sheet 1 1
 Title "RT-8p8c Module"
-Date "23 jul 2012"
+Date "24 jul 2012"
 Rev "A.1"
 Comp ""
 Comment1 ""
@@ -509,7 +508,7 @@ L R R14
 U 1 1 500395EE
 P 6800 1250
 F 0 "R14" V 6880 1250 50  0000 C CNN
-F 1 "1K" V 6800 1250 50  0000 C CNN
+F 1 "120R" V 6800 1250 50  0000 C CNN
 	1    6800 1250
 	0    1    1    0   
 $EndComp
