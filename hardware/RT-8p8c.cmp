@@ -1,4 +1,4 @@
-Cmp-Mod V01 Created by CvPcb (2012-apr-16-27)-stable date = Tuesday 24,July,2012 09:15:21 AM SGT
+Cmp-Mod V01 Created by CvPcb (2012-apr-16-27)-stable date = Saturday 04,August,2012 10:51:37 AM SGT
 
 BeginCmp
 TimeStamp = /50019032;
@@ -169,7 +169,21 @@ IdModule  = 1PIN_SMD;
 EndCmp
 
 BeginCmp
-TimeStamp = /4FE5BD75;
+TimeStamp = /501B9951;
+Reference = P5;
+ValeurCmp = _;
+IdModule  = 1PIN_SMD;
+EndCmp
+
+BeginCmp
+TimeStamp = /501B9AD5;
+Reference = P6;
+ValeurCmp = _;
+IdModule  = 1PIN_SMD;
+EndCmp
+
+BeginCmp
+TimeStamp = /501C8AC7;
 Reference = R1;
 ValeurCmp = 1K;
 IdModule  = SM0402;
@@ -262,7 +276,28 @@ EndCmp
 BeginCmp
 TimeStamp = /500395EE;
 Reference = R14;
-ValeurCmp = 120R;
+ValeurCmp = 220R;
+IdModule  = SM0402;
+EndCmp
+
+BeginCmp
+TimeStamp = /501B67AB;
+Reference = R15;
+ValeurCmp = 220R;
+IdModule  = SM0402;
+EndCmp
+
+BeginCmp
+TimeStamp = /4FE5BD75;
+Reference = R16;
+ValeurCmp = 220R;
+IdModule  = SM0402;
+EndCmp
+
+BeginCmp
+TimeStamp = /501B8E64;
+Reference = R17;
+ValeurCmp = 1K;
 IdModule  = SM0402;
 EndCmp
 
