@@ -73,9 +73,10 @@ extern struct uip_eth_addr uip_ethaddr;
 void DelayMs(unsigned int msec) {
 	unsigned int tWait, tStart;
 
-	tWait=(SYS_FREQ/2000)*msec;        //    SYS_FREQ        (80000000)
+	tWait=(SYS_FREQ/2000)*msec;
 	tStart=ReadCoreTimer();
-	while ((ReadCoreTimer()-tStart)<tWait);       // wait for the time to pass
+	// wait for the time to pass
+	while ((ReadCoreTimer()-tStart)<tWait);       
 }
 
 static void buffer_init() {
@@ -84,7 +85,8 @@ static void buffer_init() {
 	// Allocate RX TX buffer
 	for (i=0; i < (NUM_RXBUF+NUM_TXBUF+1); i++) {
 		if (!rxtxbuf[i]) {
-			rxtxbuf[i] = (unsigned char *)malloc((unsigned char)BUFSIZE);
+			rxtxbuf[i] = (unsigned char *)
+					malloc((unsigned char)BUFSIZE);
 		}
 	}
 
@@ -93,7 +95,8 @@ static void buffer_init() {
 	// Allocate RX descriptor
 	for (i=0; i < (NUM_RXBUF); i++) {
 		if (!rxdcpt[i]) {
-			rxdcpt[i] = (sEthTxDcpt *)(malloc((unsigned char)(sizeof(sEthTxDcpt))));
+			rxdcpt[i] = (sEthTxDcpt *)
+				(malloc((unsigned char)(sizeof(sEthTxDcpt))));
 		}
 	}
 
@@ -113,7 +116,8 @@ static void buffer_init() {
 	// Allocate TX descriptor
 	for (i=0; i < (NUM_TXBUF+1); i++) {
 		if (!txdcpt[i]) {
-			txdcpt[i] = (sEthTxDcpt *)(malloc((unsigned char)(sizeof(sEthTxDcpt))));
+			txdcpt[i] = (sEthTxDcpt *)
+				(malloc((unsigned char)(sizeof(sEthTxDcpt))));
 		}
 	}
 
@@ -124,7 +128,8 @@ static void buffer_init() {
 		txdcpt[i]->hdr.EOWN = 1;	// Owned by HW
 		txdcpt[i]->hdr.NPV = 1;		// Next entry is valid pointer
 		txdcpt[i]->hdr.bCount = 0;
-		txdcpt[i]->pEDBuff = (unsigned char *) KVA_TO_PA(rxtxbuf[i+1+NUM_RXBUF]);
+		txdcpt[i]->pEDBuff = (unsigned char *) 
+					KVA_TO_PA(rxtxbuf[i+1+NUM_RXBUF]);
 		txdcpt[i]->next_ed = KVA_TO_PA(txdcpt[i+1]);
 	}
 	// this is end of list
@@ -215,9 +220,10 @@ void ether_init(void)
 	        _EMAC1CFG1_RESETRMCS_MASK | _EMAC1CFG1_RESETRFUN_MASK |
 	        _EMAC1CFG1_RESETTMCS_MASK | _EMAC1CFG1_RESETTFUN_MASK;
 
-	// Properly initialize as digital, all the pins used by the MAC - PHY interface (normally
-	// only those pins that have shared analog functionality need to be configured).
-	// All are digital pins for this app.
+	/* Properly initialize as digital, all the pins used by the MAC - PHY 
+	   interface (normally only those pins that have shared analog 
+	   functionality need to be configured).
+	   All are digital pins for this app. */
 	
 	init_ether_pins();
 
@@ -272,7 +278,7 @@ void ether_init(void)
 
 	// Set RX filters
 	// Enable CRC, broadcast and unicast only
-	ETHRXFC = _ETHRXFC_BCEN_MASK | _ETHRXFC_UCEN_MASK | _ETHRXFC_CRCOKEN_MASK;
+	ETHRXFC = _ETHRXFC_BCEN_MASK|_ETHRXFC_UCEN_MASK|_ETHRXFC_CRCOKEN_MASK;
 
 	// Set RX descriptor data buffer size
 	ETHCON2 = (BUFSIZE/16)<<4;
@@ -303,7 +309,8 @@ unsigned int ether_read(void) {
 
 					// swap buffers
 					tmp = rxdcpt[i]->pEDBuff;
-					rxdcpt[i]->pEDBuff = (unsigned char *)KVA_TO_PA(uip_buf);
+					rxdcpt[i]->pEDBuff = (unsigned char *)
+						KVA_TO_PA(uip_buf);
 
 					uip_buf = (unsigned char *)
 					        PA_TO_KVA1((unsigned int)tmp);

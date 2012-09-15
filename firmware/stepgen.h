@@ -30,9 +30,9 @@ int stepgen_update_input(const void *buf);
 /*
   Timing diagram:
 	       ____	       ____
-  STEP	   ___|    |__________|    |___
+  STEP	   ___/    \__________/    \___
   	   ___________
-  DIR	              |________________
+  DIR	              \________________
 		
   stepwdth    |<-->|          |   
   stepspace   |    |<-------->|   
@@ -42,14 +42,14 @@ int stepgen_update_input(const void *buf);
 */
 
 typedef struct {
-	int32_t velocity[MAXGEN],
-		delay;
+	int32_t velocity[MAXGEN];
 } stepgen_input_struct;
 
 typedef struct {
 	int32_t stpwdth[MAXGEN],
 		dirsetp[MAXGEN],
-		dirhold[MAXGEN];
+		dirhold[MAXGEN],
+		delay;
 } stepgen_config_struct;
 
 #endif /* __STEPGEN_H__ */
