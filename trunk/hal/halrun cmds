@@ -1,0 +1,27 @@
+loadrt threads name1=test period1=1000000 
+loadrt siggen 
+addf siggen.0.update test
+
+loadrt rt8p8c
+
+net X-vel siggen.0.cosine => rt8p8c.0.velocity-cmd
+net Y-vel siggen.0.sine => rt8p8c.1.velocity-cmd
+setp rt8p8c.0.maxaccel 100
+setp rt8p8c.0.maxvel 100
+setp rt8p8c.0.scale 1000
+setp rt8p8c.0.stepwidth 50
+setp rt8p8c.0.dirhold 1
+setp rt8p8c.0.dirsetup 1
+setp rt8p8c.1.maxaccel 100
+setp rt8p8c.1.maxvel 100
+setp rt8p8c.1.scale 1000
+setp rt8p8c.1.stepwidth 50
+setp rt8p8c.1.dirhold 1
+setp rt8p8c.1.dirsetup 1
+setp rt8p8c.0.enable 1
+setp rt8p8c.1.enable 1
+setp rt8p8c.replydly 1
+addf rt8p8c.read test
+addf rt8p8c.write test
+start
+

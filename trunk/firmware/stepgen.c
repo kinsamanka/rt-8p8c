@@ -28,15 +28,16 @@
 #include "hardware.h"
 #include "stepgen.h"
 
-#define STEP_MASK	(1<<14)
+#define STEPBIT		17
+#define STEP_MASK	(1<<STEPBIT)
 #define DIR_MASK	(1<<31)
 
 /*
   Timing diagram:
 	       ____	       ____
-  STEP	   ___|    |__________|    |___
+  STEP	   ___/    \__________/    \___
   	   ___________
-  DIR	              |________________
+  DIR	              \________________
 		
   stepwdth    |<-->|          |   
   stepspace   |    |<-------->|   
@@ -49,24 +50,47 @@ static int stepwdth[MAXGEN] = {0},
 	   dirsetup[MAXGEN] = {0},
 	   dir_hold[MAXGEN] = {0};	// must be < step period
 
-volatile int32_t position[MAXGEN] = {0};	
+static volatile int32_t position[MAXGEN] = {0};	
 static int32_t	 oldpos[MAXGEN]   = {0},
 		 oldvel[MAXGEN]   = {0};
 
-volatile stepgen_input_struct stepgen_input = {{(1<<13),(1<<12),(1<<11),(1<<10)},0};
-volatile stepgen_config_struct stepgen_config = {{1,1,1,1},
-						 {1,1,1,1},
-						 {1,1,1,1}};
+static volatile stepgen_input_struct stepgen_input = {0};
+static volatile stepgen_config_struct stepgen_config = {{1,1,1,1},
+							{1,1,1,1},
+							{1,1,1,1},
+							1};
+static volatile int reply_delay = 0;
+
+static int get_feedback(void *buf)
+{
+	reply_delay = stepgen_config.delay;
+
+	// wait for delay
+	while (reply_delay);
+
+	// disable interrupts
+	asm volatile("di");
+	asm volatile("ehb");
+
+	memcpy(buf, (const void*)position, sizeof(position));
+
+	// enable interrupts
+	asm volatile("ei");
+
+	return sizeof(position);
+}
 
 void stepgen_update_config(const void *buf)
 {
 	// disable interrupts
 	asm volatile("di");
 	asm volatile("ehb");
+
 	memcpy((void*)&stepgen_config, buf, sizeof(stepgen_config));
+
 	// enable interrupts
 	asm volatile("ei");
-	
+
 }
 
 int stepgen_update_input(const void *buf)
@@ -74,23 +98,13 @@ int stepgen_update_input(const void *buf)
 	// disable interrupts
 	asm volatile("di");
 	asm volatile("ehb");
+
 	memcpy((void*)&stepgen_input, buf, sizeof(stepgen_input));
+
 	// enable interrupts
 	asm volatile("ei");
 
-	// wait for delay
-	while (stepgen_input.delay);
-
-	// send result
-	// disable interrupts
-	asm volatile("di");
-	asm volatile("ehb");
-	memcpy((void*)buf, (const void*)position, sizeof(position));
-	// enable interrupts
-	asm volatile("ei");
-	
-	return 20;
-
+	return get_feedback((void*)buf) + 4;
 }
 
 void stepgen_reset(void)
@@ -106,7 +120,6 @@ void stepgen_reset(void)
 		oldvel[i]   = 0;
 		
 		stepgen_input.velocity[i] = 0;
-		stepgen_input.delay       = 0;
 
 		DIR_LO_X;
 		DIR_LO_Y;
@@ -126,8 +139,8 @@ void stepgen(void)
 	int i, stepready;
 
 	// counter for reply delay
-	if (stepgen_input.delay) {
-		stepgen_input.delay--;
+	if (reply_delay) {
+		reply_delay--;
 	}
 	
 	for (i=0; i<4; i++) {
@@ -162,22 +175,25 @@ void stepgen(void)
 		} else { 
 		
 			// check for direction change
-			if ((stepgen_input.velocity[i] ^ oldvel[i]) & DIR_MASK) {
+			if ((stepgen_input.velocity[i]^oldvel[i]) & DIR_MASK) {
 				oldvel[i] = stepgen_input.velocity[i];
 				// direction setup counter
 				dirsetup[i] = stepgen_config.dirsetp[i];
 				
 				if (stepgen_input.velocity[i] > 0) {
-
+					if (i==0) DIR_LO_X;
+					if (i==1) DIR_LO_Y;
+					if (i==2) DIR_LO_Z;
+					if (i==3) DIR_LO_A;
+				} else if (stepgen_input.velocity[i] < 0) {
 					if (i==0) DIR_HI_X;
 					if (i==1) DIR_HI_Y;
 					if (i==2) DIR_HI_Z;
 					if (i==3) DIR_HI_A;
 				} else {
-					if (i==0) DIR_LO_X;
-					if (i==1) DIR_LO_Y;
-					if (i==2) DIR_LO_Z;
-					if (i==3) DIR_LO_A;
+					// don't change direction if
+					// velocity is 0
+					dirsetup[i] = 0;
 				}
 			}
 		}

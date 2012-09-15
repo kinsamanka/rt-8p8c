@@ -1,0 +1,454 @@
+//    Copyright (C) 2012 GP Orcullo
+//    
+//    This file is part of rt-8p8c, an ethernet based interface for LinuxCNC.
+//
+//    Portions of this code is based on stepgen.c 
+//    by John Kasunich, Copyright (C) 2003-2007 
+//
+//    This program is free software; you can redistribute it and/or modify
+//    it under the terms of the GNU General Public License as published by
+//    the Free Software Foundation; either version 3 of the License, or
+//    (at your option) any later version.
+//
+//    This program is distributed in the hope that it will be useful,
+//    but WITHOUT ANY WARRANTY; without even the implied warranty of
+//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//    GNU General Public License for more details.
+//
+//    You should have received a copy of the GNU General Public License
+//    along with this program; if not, write to the Free Software
+//    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+//
+
+component rt8p8c "Ethernet based interface for LinuxCNC";
+
+description "TODO" ;
+
+pin in bit     #.enable 	[4] ;
+pin in float   #.velocity-cmd	[4] "Desired motor velocity";
+
+pin out s32    #.counts		[4] "Feedback position in counts";
+pin out float  #.position-fb	[4] "Feedback position in position units";
+
+param rw float #.scale		[4] = 1.0 "Steps per position unit.";
+param rw float #.maxvel		[4] = 1.0 "Maximum velocity";
+param rw float #.maxaccel	[4] = 1.0 "Maximum acceleration";
+param rw u32   #.stepwidth	[4] = 1 "Minimum pulse width of step pulse in 10 us.";
+param rw u32   #.stepspace	[4] = 1 "Minimum spacing between two step pulses in 10 us.";
+param rw u32   #.dirsetup	[4] = 1 "Minimum time from a direction change to the beginning of the next step pulse in 10 us.";
+param rw u32   #.dirhold	[4] = 1 "Minimum time from the beginning of a step pulse to a direction change in 10 us.";
+param rw u32   replydly		    = 1 "Reply delay in 10 us.";
+
+/*
+  Timing diagram:
+	       ____	       ____
+  STEP	   ___/    \__________/    \___
+  	   ___________
+  DIR	              \________________
+		
+  stepwdth    |<-->|          |   
+  stepspace   |    |<-------->|   
+  dir_hold    |<----->|       |
+  dirsetup    |       |<----->|
+	     
+*/
+
+option singleton;
+option extra_setup;
+option extra_cleanup;
+
+function read "Read status from the RT-8p8c board";
+function write "Send data to the RT-8p8c board";
+
+license "GPL";
+
+;;
+#include <linux/net.h>
+#include <linux/in.h>
+#include "rtapi_math.h"
+
+#include "/usr/local/rtnet/include/rtnet.h"
+
+#define MAXGEN		4
+
+#define UDP_PORT	8888
+#define UDPSTART 	10000
+#define UDPMAX 		11024
+#define CLIENT_IP	"10.0.0.2"
+#define RCV_TIMEOUT	500000
+
+#define STEP_MASK	(1<<17)
+#define BASEFREQ	100000		/* Base frequency of the PIC step generator in nanoseconds */
+
+#define STEPBIT		17		/* bit location in DDS accum */
+
+#define PERIODFP 	((double)1.0 / (double)(BASEFREQ))
+#define VELSCALE	((double)(1L << STEPBIT) * PERIODFP)
+#define ACCELSCALE	(VELSCALE * PERIODFP)
+
+static struct sockaddr_in local_addr;
+static struct sockaddr_in server_addr;
+
+static int sockfd = 0;
+
+struct cmd_data {
+	const char header[4];
+	int32_t velocity[4];
+} __attribute__((__packed__));
+
+typedef struct cmd_data cmd_data_t;
+
+struct rcv_data {
+	int32_t header,
+		position[4];
+} __attribute__((__packed__));
+
+typedef struct rcv_data rcv_data_t;
+
+struct cfg_data {
+	const char header[4];
+	int32_t stpwdth[MAXGEN],
+		dirsetp[MAXGEN],
+		dirhold[MAXGEN],
+		delay;
+} __attribute__((__packed__));
+
+typedef struct cfg_data cfg_data_t;
+
+FUNCTION(read) {
+	
+	static double old_scale [4] = {0};
+	static double scale_inv [4] = {0};
+	
+	rcv_data_t buf = {0,{0}};
+	int ret = 0;
+	int i;
+
+	/* Block until packet is received. */
+	ret = rt_dev_recv(sockfd, (void*)&buf, sizeof(buf), MSG_DONTWAIT);
+
+	if (ret == -EAGAIN) {
+		rtapi_print_msg(RTAPI_MSG_ERR, "RT-8p8c: Receive timeout!\n");
+		return;
+	} else if(ret < 0) {
+		rtapi_print_msg(RTAPI_MSG_ERR, 
+			"RT-8p8c: Receive error number: %d\n", ret);
+		return;
+	}
+	
+	if (buf.header == 0x444D433C) {		// "<CMD"
+		for (i = 0; i < 4; i++) {
+			
+			// check if there is a scale change
+			if (_scale(i) != old_scale[i]) {
+				/* get ready to detect future scale changes */
+				old_scale[i] = _scale(i);
+				/* validate the new scale value */
+				if ((_scale(i) < 1e-20)
+					&& (_scale(i) > -1e-20)) {
+					/* value too small, divide by zero 
+					   is a bad thing */
+					_scale(i) = 1.0;
+				}
+				/* we will need the reciprocal, and the accum 
+				   is fixed point with fractional bits, 
+				   so we precalc some stuff */
+				scale_inv[i] = 
+					(1.0 / (1L << STEPBIT)) / _scale(i);
+			}
+			
+			_counts(i) = buf.position[i] >> STEPBIT;
+			/* scale accumulator to make floating point position, 
+			   after removing the one-half count offset */
+#if 0
+			_position_fb(i) =  
+				(double)(buf.position[i]-(1L<< (STEPBIT-1))) 
+				* scale_inv[i];
+#else
+			_position_fb(i) =  
+				(double)(buf.position[i]) * scale_inv[i];
+#endif
+		}
+	}
+}
+
+FUNCTION(write) {
+
+	static long old_dtns = 0;	/* update_freq funct period in nsec */	
+	static double dt = 0;		/* update_freq period in seconds */
+	static double recip_dt = 0;	/* recprocal of period, avoids divides */
+	static u32 old_stepwidth [4]	= {0};	/* used to detect parameter changes */
+	static u32 old_stepspace [4]	= {0};
+	static u32 old_dirhold [4]	= {0};
+	static u32 old_dirsetup [4]	= {0};
+	static u32 old_replydly 	= 0;
+	static int printed_error [4]	= {0};	/* flag to avoid repeated printing */	
+	static double old_vel[4]	= {0};
+	
+	cmd_data_t cmdbuf = {">CMD",{0}};
+	cfg_data_t cfgbuf = {">CFG",{0}};
+	int ret = 0;
+	int i;
+	
+	int send_cfg = 0;
+
+	long min_step_period;
+	double max_vel, desired_vel, max_accl, vel_cmd, dv, new_vel;
+
+	
+	/* now recalc constants related to the period of this funct */
+	/* only recalc constants if period changes */
+	if (period != old_dtns) {
+		/* get ready to detect future period changes */
+		old_dtns = period;
+		/* dT is the period of this thread, 
+		   used for the position loop */
+		dt = period * 0.000000001;
+		/* calc the reciprocal once here, 
+		   to avoid multiple divides later */
+		recip_dt = 1.0 / dt;
+	}
+
+	if ( replydly != old_replydly ) {
+		/* must be non-zero */
+		if ( replydly == 0 ) {
+			replydly = 1;
+		}
+		old_replydly = replydly;
+		
+		// update config data
+		send_cfg = 1;
+	}
+
+	/* loop thru generators */
+	for (i=0; i<MAXGEN; i++) {
+
+		/* process timing parameters */	
+		if ( _stepwidth(i) != old_stepwidth[i] ) {
+			/* must be non-zero */
+			if ( _stepwidth(i) == 0 ) {
+				_stepwidth(i) = 1;
+			}
+			old_stepwidth[i] = _stepwidth(i);
+			
+			// update config data
+			send_cfg = 1;
+		}
+	
+		if ( _stepspace(i) != old_stepspace[i] ) {
+			/* must be non-zero */
+			if ( _stepspace(i) == 0 ) {
+				_stepspace(i) = 1;
+			}
+			old_stepspace[i] = _stepspace(i);
+		}
+
+		if ( _dirsetup(i) != old_dirsetup[i] ) {
+			/* must be non-zero */
+			if ( _dirsetup(i) == 0 ) {
+				_dirsetup(i) = 1;
+			}
+			old_dirsetup[i] = _dirsetup(i);
+			
+			// update config data
+			send_cfg = 1;
+		}
+	
+		if ( _dirhold(i) != old_dirhold[i] ) {
+			/* must be non-zero */
+			if ( _dirhold(i) == 0 ) {
+				_dirhold(i) = 1;
+			}
+			old_dirhold[i] = _dirhold(i);
+			
+			// update config data
+			send_cfg = 1;
+		}
+		
+		// skip and send config
+		if (send_cfg) continue;
+
+		/* test for disabled stepgen */
+		if (!_enable(i)) {
+			/* set velocity to zero */
+			cmdbuf.velocity[i] = 0;
+			continue;
+		}
+
+		/* calculate velocity limit */
+		min_step_period = _stepwidth(i) + _stepspace(i);
+		max_vel = 1.0 / (min_step_period * 0.00001);
+		
+		/* check for user specified velocity limit parameter */
+		if (_maxvel(i) <= 0.0) {
+			/* set to zero if negative */
+			_maxvel(i) = 0.0;
+		} else {
+			/* parameter is non-zero, compare to max_vel */
+			desired_vel = _maxvel(i) * fabs(_scale(i));
+			if (desired_vel > max_vel) {
+				/* parameter is too high, complain about it */
+				if(!printed_error[i]) {
+					rtapi_print_msg(RTAPI_MSG_ERR,
+						"RT-8p8c: Channel %d: The requested maximum velocity of %d steps/sec is too high.\n",
+						i, (int)desired_vel);
+					rtapi_print_msg(RTAPI_MSG_ERR,
+						"RT-8p8c: The maximum possible frequency is %d steps/second\n",
+						(int)max_vel);
+					printed_error[i] = 1;
+				}
+				/* parameter is too high, limit it */
+				_maxvel(i) = max_vel / fabs(_scale(i));
+			} else {
+				/* lower max_vel to match parameter */
+				max_vel = _maxvel(i) * fabs(_scale(i));
+			}
+		}
+	
+		/* set internal accel limit to its absolute max, which is
+		   zero to full speed in one thread period */
+		max_accl = max_vel * recip_dt;
+		
+		/* check for user specified accel limit parameter */
+		if (_maxaccel(i) <= 0.0) {
+			/* set to zero if negative */
+			_maxaccel(i) = 0.0;
+		} else {
+			/* parameter is non-zero, compare to max_accl */
+			if ((_maxaccel(i) * fabs(_scale(i))) > max_accl) {
+				/* parameter is too high, lower it */
+				_maxaccel(i) = max_accl / fabs(_scale(i));
+			} else {
+				/* lower limit to match parameter */
+				max_accl = _maxaccel(i) * fabs(_scale(i));
+			}
+		}
+	
+		/* at this point, all scaling, limits, and other parameter
+		   changes have been handled - time for the main control */
+
+		/* velocity mode is simpler */
+		/* calculate velocity command in counts/sec */
+		vel_cmd = _velocity_cmd(i) * _scale(i);
+
+		/* apply frequency limit */
+		if (vel_cmd > max_vel) {
+			vel_cmd = max_vel;
+		} else if (vel_cmd < -max_vel) {
+			vel_cmd = -max_vel;
+		}
+
+		/* calc max change in frequency in one period */
+		dv = max_accl * dt;
+
+		/* apply accel limit */
+		if ( vel_cmd > (old_vel[i] + dv) ) {
+			new_vel = old_vel[i] + dv;
+		} else if ( vel_cmd < (old_vel[i] - dv) ) {
+			new_vel = old_vel[i] - dv;
+		} else {
+			new_vel = vel_cmd;
+		}
+	
+		/* end of velocity mode */
+		
+		old_vel[i] = new_vel;
+		/* calculate new velocity cmd */
+		cmdbuf.velocity[i] = new_vel * VELSCALE;
+	}
+	/* done, now send the data */
+
+	if (send_cfg) {
+		for (i=0; i<MAXGEN; i++) {
+			cfgbuf.stpwdth[i] = _stepwidth(i);
+			cfgbuf.dirsetp[i] = _dirsetup(i);
+			cfgbuf.dirhold[i] = _dirhold(i);
+			cfgbuf.delay = replydly;
+		}
+		send_cfg = 0;
+		ret = rt_dev_send(sockfd, (void*)&cfgbuf, sizeof(cfgbuf), 0);
+	} else {
+		ret = rt_dev_send(sockfd, (void*)&cmdbuf, sizeof(cmdbuf), 0);
+	}
+
+	if(ret < 0)
+		rtapi_print_msg(RTAPI_MSG_ERR, 
+			"RT-8p8c: Transmit error number: %d\n", ret);
+	
+}
+
+EXTRA_SETUP() {
+
+	int ret    = 0;
+	int64_t timeout = RCV_TIMEOUT;
+	int port;
+
+	// Set address structures to zero.  
+	memset(&local_addr, 0, sizeof(struct sockaddr_in));
+	memset(&server_addr, 0, sizeof(struct sockaddr_in));
+	
+	// Set address information structures
+	local_addr.sin_family		= AF_INET;
+	local_addr.sin_addr.s_addr	= INADDR_ANY;
+
+	server_addr.sin_family		= AF_INET;
+	server_addr.sin_addr.s_addr	= rt_inet_aton(CLIENT_IP);
+	server_addr.sin_port		= htons(UDP_PORT);
+
+	// Create new socket. 
+	sockfd = rt_dev_socket(AF_INET, SOCK_DGRAM, 0);
+	if (sockfd < 0) {
+		rtapi_print_msg(RTAPI_MSG_ERR, 
+			"RT-8p8c: Error opening socket: %d\n", sockfd);
+		return -1;
+	}
+
+	// Set timeout for socket in blocking mode
+	ret = rt_dev_ioctl(sockfd, RTNET_RTIOC_TIMEOUT, &timeout);
+	if (ret < 0) {
+		rtapi_print_msg(RTAPI_MSG_ERR, 
+			"RT-8p8c: Setting socket option failed with error %d",
+			ret);
+		return ret;
+	}
+
+	// loop if rtnet cannot bind to local port
+	port = UDPSTART;
+	do {
+		local_addr.sin_port = htons(port);
+		// Bind socket to local address. 
+		ret = rt_dev_bind(sockfd, (struct sockaddr *) &local_addr,
+				sizeof(struct sockaddr_in));
+		if (ret != 0) {
+			rtapi_print_msg(RTAPI_MSG_ERR, 
+				"RT-8p8c: Binding to socket %d failed!\n", port);
+		}
+		port++;
+	} while (( port != UDPMAX) && (ret == -EADDRINUSE));
+	
+	if (ret < 0) {
+		rtapi_print_msg(RTAPI_MSG_ERR, 
+			"RT-8p8c: Binding socket failed with error %d\n", ret);
+		return ret;
+	}
+	
+	// Specify destination address for socket. 
+	rt_dev_connect(sockfd, (struct sockaddr *) &server_addr,
+			sizeof(struct sockaddr_in));
+
+	return 0; 
+}
+
+
+EXTRA_CLEANUP() {
+
+	if (sockfd) { //rt_dev_close(sockfd);
+		while (rt_dev_close(sockfd) == -EAGAIN) {
+			rtapi_print_msg(RTAPI_MSG_ERR, 
+				"RT-8p8c: Socket busy - waiting...\n");
+			//sleep(1);
+			set_current_state(TASK_UNINTERRUPTIBLE);
+			schedule_timeout(1*HZ); /* wait a second */
+		}	
+	}
+}

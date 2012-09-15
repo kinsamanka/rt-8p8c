@@ -46,12 +46,11 @@
 	FMIIEN = ON, \
 	FETHIO = ON	// external PHY in MII/normal configuration
 
-#define TOGGLES_PER_SEC			100000
-#define CORE_TICK_RATE	        	(SYS_FREQ/2/TOGGLES_PER_SEC)
-#define CORE_DIVIDER			(TOGGLES_PER_SEC/CLOCK_CONF_SECOND)
+#define BASEFREQ			100000
+#define CORE_TICK_RATE	        	(SYS_FREQ/2/BASEFREQ)
+#define CORE_DIVIDER			(BASEFREQ/CLOCK_CONF_SECOND)
 
 #define ENABLE_WATCHDOG
-
 
 struct timer wdt_timer;
 static clock_time_t volatile timeval = 0;
@@ -120,8 +119,7 @@ int main(void) {
 	WDTCONSET = 0x8000; 
 #endif 
 
-	uip_ipaddr(ipaddr, 10,19,74,25);
-//	uip_ipaddr(ipaddr, 10,0,0,2);
+	uip_ipaddr(ipaddr, 10,0,0,2);
 	uip_sethostaddr(ipaddr);
 	uip_ipaddr(ipaddr, 255,255,255,0);
 	uip_setnetmask(ipaddr);
@@ -139,18 +137,20 @@ int main(void) {
 			if (BUF->type == htons(UIP_ETHTYPE_IP)) {
 				uip_arp_ipin();
 				uip_input();
-				/* If the above function invocation resulted in data that
-				should be sent out on the network, the global variable
-				uip_len is set to a value > 0. */
+				/* If the above function invocation resulted 
+				   in data that should be sent out on the 
+				   network, the global variable
+				   uip_len is set to a value > 0. */
 				if (uip_len > 0) {
 					uip_arp_out();
 					ether_send();
 				}
 			} else if (BUF->type == htons(UIP_ETHTYPE_ARP)) {
 				uip_arp_arpin();
-				/* If the above function invocation resulted in data that
-				should be sent out on the network, the global variable
-				uip_len is set to a value > 0. */
+				/* If the above function invocation resulted 
+				   in data that should be sent out on the 
+				   network, the global variable
+				   uip_len is set to a value > 0. */
 				if (uip_len > 0) {
 					ether_send();
 				}
@@ -162,9 +162,10 @@ int main(void) {
 
 			for (i=0; i<UIP_UDP_CONNS; i++) {
 				uip_udp_periodic(i);
-				/* If the above function invocation resulted in data that
-				should be sent out on the network, the global variable
-				uip_len is set to a value > 0. */
+				/* If the above function invocation resulted 
+				   in data that should be sent out on the 
+				   network, the global variable
+				   uip_len is set to a value > 0. */
 				if (uip_len > 0) {
 					uip_arp_out();
 					ether_send();
@@ -207,12 +208,14 @@ void udp_appcall(void) {
 					break;
 				case 0x444D433E:	// >CMD
 					// update
-					len = stepgen_update_input((const void*)uip_appdata+4);
+					len = stepgen_update_input(
+						(const void*)uip_appdata+4);
 					// interface is alive
 					timer_restart(&wdt_timer);
 					break;
 				case 0x4746433E:	// >CFG
-					stepgen_update_config((const void*)uip_appdata+4);
+					stepgen_update_config(
+						(const void*)uip_appdata+4);
 					break;
 			}
 			*((char *)uip_appdata) = '<';
@@ -231,7 +234,6 @@ void udp_appcall(void) {
 void __ISR(_CORE_TIMER_VECTOR, ipl7) CoreTimerHandler(void) {
 	static int count = CORE_DIVIDER;
 
-//	DO0_IO_1 ;
 	// update the period
 	UpdateCoreTimer(CORE_TICK_RATE);
 	
@@ -244,6 +246,5 @@ void __ISR(_CORE_TIMER_VECTOR, ipl7) CoreTimerHandler(void) {
 	
 	// clear the interrupt flag
 	mCTClearIntFlag();
-//	DO0_IO_0 ;
 }
 
