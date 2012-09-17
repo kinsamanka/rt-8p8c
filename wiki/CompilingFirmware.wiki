@@ -1,8 +1,14 @@
 #summary Compiling PIC32 firmware.
 
-The firmware is compiled using the compiler provided by MPIDE.
+The PIC32 firmware is compiled using the compiler provided by MPIDE.
 
-= Steps =
+== Steps ==
 
-  * Download the latest version of the  [https://github.com/downloads/chipKIT32/chipKIT32-MAX/mpide-0023-linux-20120903.tgz MPIDE compiler].
-  * 
+  * Download the latest version of the  [https://github.com/chipKIT32/chipKIT32-MAX/downloads MPIDE compiler].
+  * Extract and move the compiler to {{{/usr/local}}}
+    {{{
+
+tar --wildcards -xvzf mpide-0023-linux-*.tgz  'mpide-*/hardware/pic32/compiler/pic32-tools'
+sudo mv mpide-*/hardware/pic32/compiler/pic32-tools /usr/local
+rm  mpide-*/ -r
+}}}
