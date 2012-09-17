@@ -89,7 +89,7 @@ license "GPL";
 static struct sockaddr_in local_addr;
 static struct sockaddr_in server_addr;
 
-static int sockfd = 0;
+static volatile int sockfd = -1;
 
 struct cmd_data {
 	const char header[4];
@@ -442,11 +442,10 @@ EXTRA_SETUP() {
 
 EXTRA_CLEANUP() {
 
-	if (sockfd) { //rt_dev_close(sockfd);
+	if (!(sockfd < 0)) {
 		while (rt_dev_close(sockfd) == -EAGAIN) {
 			rtapi_print_msg(RTAPI_MSG_ERR, 
 				"RT-8p8c: Socket busy - waiting...\n");
-			//sleep(1);
 			set_current_state(TASK_UNINTERRUPTIBLE);
 			schedule_timeout(1*HZ); /* wait a second */
 		}	
