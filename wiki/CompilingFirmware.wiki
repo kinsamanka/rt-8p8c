@@ -12,3 +12,4 @@ tar --wildcards -xvzf mpide-0023-linux-*.tgz  'mpide-*/hardware/pic32/compiler/p
 sudo mv mpide-*/hardware/pic32/compiler/pic32-tools /usr/local
 rm  mpide-*/ -r
 }}}
+  * Done!
