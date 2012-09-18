@@ -1,5 +1,4 @@
 #summary How to setup RTnet
-===How to setup RTnet===
 
   * Make sure that LinuxCNC dependencies are installed
 {{{
