@@ -1,57 +1,71 @@
-//    Copyright (C) 2012 GP Orcullo
-//    
-//    This file is part of rt-8p8c, an ethernet based interface for LinuxCNC.
-//
-//    Portions of this code is based on stepgen.c 
-//    by John Kasunich, Copyright (C) 2003-2007 
-//
-//    This program is free software; you can redistribute it and/or modify
-//    it under the terms of the GNU General Public License as published by
-//    the Free Software Foundation; either version 3 of the License, or
-//    (at your option) any later version.
-//
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU General Public License for more details.
-//
-//    You should have received a copy of the GNU General Public License
-//    along with this program; if not, write to the Free Software
-//    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
-//
+/*    Copyright (C) 2012 GP Orcullo
+ *
+ *    This file is part of rt-8p8c, an ethernet based interface for LinuxCNC.
+ *
+ *    Portions of this code is based on stepgen.c
+ *    by John Kasunich, Copyright (C) 2003-2007
+ *
+ *    This program is free software; you can redistribute it and/or modify
+ *    it under the terms of the GNU General Public License as published by
+ *    the Free Software Foundation; either version 3 of the License, or
+ *    (at your option) any later version.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU General Public License for more details.
+ *
+ *    You should have received a copy of the GNU General Public License
+ *    along with this program; if not, write to the Free Software
+ *    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+ */
 
 component rt8p8c "Ethernet based interface for LinuxCNC";
 
-description "TODO" ;
+description """
+   Usage: loadrt rt8p8c lport=<local-port> client_ip=<client-ip> rport=<client-port> delay=<rxtx delay>
+""";
 
-pin in bit     #.enable 	[4] ;
-pin in float   #.velocity-cmd	[4] "Desired motor velocity";
+pin in float	#.velocity-cmd[4] = 0.0 "Desired motor velocity";
+pin in bit	#.enable[4]	= 0;
 
-pin out s32    #.counts		[4] "Feedback position in counts";
-pin out float  #.position-fb	[4] "Feedback position in position units";
+pin out s32	supervisor_state	"Supervisor thread state machine status";
+pin out s32	cycle_time		"Loop period in 10us";
+pin out s32	#.counts[4]	= 0	"Feedback position in counts";
+pin out float	#.position-fb[4]= 0.0	"Feedback position in position units";
+pin out bit	ready		= 0	"Module state";
 
-param rw float #.scale		[4] = 1.0 "Steps per position unit.";
-param rw float #.maxvel		[4] = 1.0 "Maximum velocity";
-param rw float #.maxaccel	[4] = 1.0 "Maximum acceleration";
-param rw u32   #.stepwidth	[4] = 1 "Minimum pulse width of step pulse in 10 us.";
-param rw u32   #.stepspace	[4] = 1 "Minimum spacing between two step pulses in 10 us.";
-param rw u32   #.dirsetup	[4] = 1 "Minimum time from a direction change to the beginning of the next step pulse in 10 us.";
-param rw u32   #.dirhold	[4] = 1 "Minimum time from the beginning of a step pulse to a direction change in 10 us.";
-param rw u32   replydly		    = 1 "Reply delay in 10 us.";
+param rw u32	reply_delay	= 0	"Reply delay in 10us, set to 0 to auto calculate";
+param rw u32	#.stepwidth[4]	= 1	"Minimum pulse width of step pulse in 10 us.";
+param rw u32	#.stepspace[4]	= 1	"Minimum spacing between two step pulses in 10 us.";
+param rw u32	#.dirsetup[4]	= 1	"Minimum time from a direction change to the beginning of the next step pulse in 10 us.";
+param rw u32	#.dirhold[4]	= 1	"Minimum time from the beginning of a step pulse to a direction change in 10 us.";
+param rw float	#.scale[4]	= 1.0	"Steps per position unit.";
+param rw float	#.maxvel[4]	= 1.0	"Maximum velocity";
+param rw float	#.maxaccel[4]	= 1.0	"Maximum acceleration";
 
-/*
-  Timing diagram:
-	       ____	       ____
-  STEP	   ___/    \__________/    \___
-  	   ___________
-  DIR	              \________________
-		
-  stepwdth    |<-->|          |   
-  stepspace   |    |<-------->|   
-  dir_hold    |<----->|       |
-  dirsetup    |       |<----->|
-	     
-*/
+variable s32 txbuf[16]		= 0;
+variable u32 txsize		= 0;
+variable int tx_ret		= 0;
+
+variable s32 rxbuf[16]		= 0;
+variable int rx_ret		= 0;
+
+variable int do_read		= 0;
+variable int do_write		= 0;
+variable int do_stepgen		= 0;
+
+variable long old_dtns		= 0;	/* update_freq funct period in nsec */
+variable double dt		= 0;	/* update_freq period in seconds */
+variable double recip_dt	= 0;	/* recprocal of period, avoids divides */
+variable double scale_inv[4]	= 1.0;	/* inverse of scale */
+variable u32 old_stepwidth[4]	= 0;
+variable u32 old_stepspace[4]	= 0;
+variable u32 old_dirhold[4]	= 0;
+variable u32 old_dirsetup[4]	= 0;
+variable double old_vel[4]	= 0;
+variable double old_scale[4]	= 0;
+variable int printed_error[4]	= 0;	/* flag to avoid repeated printing */
 
 option singleton;
 option extra_setup;
@@ -59,8 +73,11 @@ option extra_cleanup;
 
 function read "Read status from the RT-8p8c board";
 function write "Send data to the RT-8p8c board";
+function stepgen "Software step generator";
+function supervisor "Communications controller";
 
 license "GPL";
+author "GP Orcullo";
 
 ;;
 #include <linux/net.h>
@@ -71,214 +88,281 @@ license "GPL";
 
 #define MAXGEN		4
 
-#define UDP_PORT	8888
-#define UDPSTART 	10000
-#define UDPMAX 		11024
-#define CLIENT_IP	"10.0.0.2"
-#define RCV_TIMEOUT	500000
+#define toRST		0x5453523E
+#define frRST		0x5453523C
+#define toCMD		0x444D433E
+#define frCMD		0x444D433C
+#define toCFG		0x4746433E
+#define frCFG		0x4746433C
 
-#define STEP_MASK	(1<<17)
-#define BASEFREQ	100000		/* Base frequency of the PIC step generator in nanoseconds */
+#define TX_TIMEOUT	2
+#define RX_TIMEOUT	1
+#define RXTXDELAY	15		/* Total rx + tx time in 10us */
+#define UDP_RPORT	8888
+#define UDP_LPORT	9999
+#define CLIENT_IP	"10.0.0.2"
 
 #define STEPBIT		17		/* bit location in DDS accum */
+#define STEP_MASK	(1<<STEPBIT)
+#define BASEFREQ	100000		/* Base freq of the PIC stepgen in ns */
 
 #define PERIODFP 	((double)1.0 / (double)(BASEFREQ))
 #define VELSCALE	((double)(1L << STEPBIT) * PERIODFP)
 #define ACCELSCALE	(VELSCALE * PERIODFP)
 
-static struct sockaddr_in local_addr;
-static struct sockaddr_in server_addr;
+#define TIMEOUT_RST	10
+#define TIMEOUT_CFG	1
+#define RCV_TIMEOUT	(rx_ret == -ETIMEDOUT)
+
+#define sizeofTX(a)	((a) * sizeof(long))
+#define rcv_reply(a)	((rx_ret >= 4) && (rxbuf[0] == a))
+#define get_cycletime()	(rxbuf[1])
+#define get_position(a)	(rxbuf[2+a])
+
+/* the following procedures are converted to macros, to solve
+   the following error:
+
+	RTAPI: Task 1[0xxxxxxxxx]: Fault with vec=14, signo=11, ip=xxxxxx.
+	RTAPI: This fault may not be recoverable without rebooting.
+
+*/
+#if 1
+#define update_velocity(a, b)							\
+	(txbuf[2+a] = b)
+
+#define send_reset()								\
+	do {									\
+		txbuf[0] = toRST;						\
+		txsize = sizeof(u32);						\
+	} while (0)
+
+#define send_cmd()								\
+	do {									\
+		txbuf[0] = toCMD;						\
+		txbuf[1] = reply_delay;						\
+		txsize = sizeof(u32) * (MAXGEN + 2);						\
+	} while (0)
+
+#define send_cfg()								\
+	do {									\
+		txbuf[0] = toCFG;						\
+		for (j = 1; j <= MAXGEN; j++)					\
+			txbuf[j] = _stepwidth(j-1);				\
+		for (i = j; i < (j + MAXGEN); i++)				\
+			txbuf[i] = _dirsetup(i-j);				\
+		for (j = i; j < (i + MAXGEN); j++)				\
+			txbuf[j] = _dirhold(j-i);				\
+		txsize = j * sizeof(u32);					\
+	} while (0)
+
+#define send_idle()								\
+	do {									\
+		txbuf[0] = toCMD;						\
+		txbuf[1] = reply_delay;						\
+		for (i = 2; i < (MAXGEN + 2); i++)				\
+			txbuf[i] = 0;						\
+		txsize = i * sizeof(u32);					\
+	} while (0)
+
+#define check_period_change(c)							\
+	do {									\
+		if (c != old_dtns) {						\
+			old_dtns = c;						\
+			dt = c * 0.000000001;					\
+			recip_dt = 1.0 / dt;					\
+		}								\
+	} while (0)
+
+#define check_stepwidth_change(a, b)						\
+	do {									\
+		if (_stepwidth(a) != old_stepwidth[a]) {			\
+			if (_stepwidth(a) == 0)					\
+				_stepwidth(a) = 1;				\
+			old_stepwidth[a] = _stepwidth(a);			\
+		b += 1;								\
+		}								\
+	} while (0)
+
+#define check_stepspace_change(a)						\
+	do {									\
+		if (_stepspace(a) != old_stepspace[a]) {			\
+			if (_stepspace(a) == 0)					\
+				_stepspace(a) = 1;				\
+			old_stepspace[a] = _stepspace(a);			\
+			if (_dirhold(a) >= _stepwidth(a) + _stepspace(a)) 	\
+				_dirhold(a) = _stepwidth(a) + _stepspace(a) - 1;\
+		}								\
+	} while (0)
+
+#define check_dirsetup_change(a, b)						\
+	do {									\
+		if (_dirsetup(a) != old_dirsetup[a]) {				\
+			if (_dirsetup(a) == 0)					\
+				_dirsetup(a) = 1;				\
+			old_dirsetup[a] = _dirsetup(a);				\
+			b += 1;							\
+		}								\
+	} while (0)
+
+#define check_dirhold_change(a, b)						\
+	do {									\
+		if (_dirhold(a) != old_dirhold[a]) {				\
+			if (_dirhold(a) == 0)					\
+				_dirhold(a) = 1;				\
+			if (_dirhold(a) >= _stepwidth(a) + _stepspace(a))	\
+				_dirhold(a) = _stepwidth(a) + _stepspace(a) - 1;\
+			old_dirhold[a] = _dirhold(a);				\
+			b += 1;							\
+		}								\
+	} while (0)
+
+#define check_scale_change(a)							\
+	do {									\
+		if (_scale(a) != old_scale[a]) {				\
+			old_scale[a] = _scale(a);				\
+			if ((_scale(a) < 1e-20) && (_scale(a) > -1e-20))	\
+				_scale(a) = 1.0;				\
+			scale_inv[a] = (1.0 / (1L << STEPBIT)) / _scale(a);	\
+		}								\
+	} while (0)
+
+#define check_params(a, b, c)							\
+	do {									\
+		check_period_change(c);						\
+		b = 0;								\
+		for (a = 0; a < MAXGEN; a++) {					\
+			check_stepwidth_change(a, b);				\
+			check_stepspace_change(a);				\
+			check_dirsetup_change(a, b);				\
+			check_dirhold_change(a, b);				\
+			check_scale_change(a);					\
+		}								\
+	} while (0)
+
+#define update_output(a)								\
+	do {									\
+		for (a = 0; a < 4; a++) {					\
+			_counts(a) = get_position(a) >> STEPBIT;		\
+			_position_fb(a) = (float)(get_position(a))		\
+						* scale_inv[i];			\
+		}								\
+		cycle_time = get_cycletime();					\
+	} while (0)
+
+#endif
+
+//_position_fb(a) = (float)(get_position(a) - (1L << (STEPBIT - 1)))		\
 
 static volatile int sockfd = -1;
 
-struct cmd_data {
-	const char header[4];
-	int32_t velocity[4];
-} __attribute__((__packed__));
+int delay = RXTXDELAY;
+RTAPI_MP_INT(delay, "RX+TX delay in 10us");
+long timeout = 500000000L;	/* 500 ms */
+RTAPI_MP_LONG(timeout, "Receive timeout in ns, must be half of thread period");
+int lport = UDP_LPORT;
+RTAPI_MP_INT(lport, "Local UDP listen port");
+int rport = UDP_RPORT;
+RTAPI_MP_INT(rport, "Remote client UDP listen port");
+char *client_ip = CLIENT_IP;
+RTAPI_MP_STRING(client_ip, "Remote client IP address");
 
-typedef struct cmd_data cmd_data_t;
+typedef enum {
+        RST, RSTWAIT,
+	GETCYCLETIME, SETREPLYDELAY,
+	CFG, CFGWAIT,
+	TXRXDELAY,
+	TXRXREADY
+} STATES;
 
-struct rcv_data {
-	int32_t header,
-		position[4];
-} __attribute__((__packed__));
+EXTRA_SETUP()
+{
+	struct sockaddr_in local_addr;
+	struct sockaddr_in server_addr;
+	int ret    = 0;
+	int64_t rxtimeout;
 
-typedef struct rcv_data rcv_data_t;
+	rxtimeout = timeout;
 
-struct cfg_data {
-	const char header[4];
-	int32_t stpwdth[MAXGEN],
-		dirsetp[MAXGEN],
-		dirhold[MAXGEN],
-		delay;
-} __attribute__((__packed__));
+	/* Set address structures to zero. */
+	memset(&local_addr, 0, sizeof(struct sockaddr_in));
+	memset(&server_addr, 0, sizeof(struct sockaddr_in));
 
-typedef struct cfg_data cfg_data_t;
+	// Set address information structures
+	local_addr.sin_family		= AF_INET;
+	local_addr.sin_addr.s_addr	= INADDR_ANY;
 
-FUNCTION(read) {
-	
-	static double old_scale [4] = {0};
-	static double scale_inv [4] = {0};
-	
-	rcv_data_t buf = {0,{0}};
-	int ret = 0;
-	int i;
+	server_addr.sin_family		= AF_INET;
+	server_addr.sin_addr.s_addr	= rt_inet_aton(client_ip);
+	server_addr.sin_port		= htons(rport);
 
-	/* Block until packet is received. */
-	ret = rt_dev_recv(sockfd, (void*)&buf, sizeof(buf), MSG_DONTWAIT);
-
-	if (ret == -EAGAIN) {
-		rtapi_print_msg(RTAPI_MSG_ERR, "RT-8p8c: Receive timeout!\n");
-		return;
-	} else if(ret < 0) {
-		rtapi_print_msg(RTAPI_MSG_ERR, 
-			"RT-8p8c: Receive error number: %d\n", ret);
-		return;
+	// Create new socket.
+	sockfd = rt_dev_socket(AF_INET, SOCK_DGRAM, 0);
+	if (sockfd < 0) {
+		rtapi_print_msg(RTAPI_MSG_ERR,
+			"RT-8p8c: Error opening socket: %d\n", sockfd);
+		return -1;
 	}
-	
-	if (buf.header == 0x444D433C) {		// "<CMD"
-		for (i = 0; i < 4; i++) {
-			
-			// check if there is a scale change
-			if (_scale(i) != old_scale[i]) {
-				/* get ready to detect future scale changes */
-				old_scale[i] = _scale(i);
-				/* validate the new scale value */
-				if ((_scale(i) < 1e-20)
-					&& (_scale(i) > -1e-20)) {
-					/* value too small, divide by zero 
-					   is a bad thing */
-					_scale(i) = 1.0;
-				}
-				/* we will need the reciprocal, and the accum 
-				   is fixed point with fractional bits, 
-				   so we precalc some stuff */
-				scale_inv[i] = 
-					(1.0 / (1L << STEPBIT)) / _scale(i);
-			}
-			
-			_counts(i) = buf.position[i] >> STEPBIT;
-			/* scale accumulator to make floating point position, 
-			   after removing the one-half count offset */
-#if 0
-			_position_fb(i) =  
-				(double)(buf.position[i]-(1L<< (STEPBIT-1))) 
-				* scale_inv[i];
-#else
-			_position_fb(i) =  
-				(double)(buf.position[i]) * scale_inv[i];
-#endif
-		}
+
+	// Set timeout for socket in blocking mode
+	ret = rt_dev_ioctl(sockfd, RTNET_RTIOC_TIMEOUT, &rxtimeout);
+	if (ret < 0) {
+		rt_dev_close(sockfd);
+		rtapi_print_msg(RTAPI_MSG_ERR,
+			"RT-8p8c: Setting socket option failed with error %d",
+			ret);
+		return ret;
 	}
+
+	local_addr.sin_port = htons(lport);
+	// Bind socket to local address.
+	ret = rt_dev_bind(sockfd, (struct sockaddr *) &local_addr,
+			sizeof(struct sockaddr_in));
+	if (ret < 0) {
+		rt_dev_close(sockfd);
+		rtapi_print_msg(RTAPI_MSG_ERR,
+			"RT-8p8c: Binding socket failed with error %d\n", ret);
+		return ret;
+	}
+
+	// Specify destination address for socket.
+	rt_dev_connect(sockfd, (struct sockaddr *) &server_addr,
+			sizeof(struct sockaddr_in));
+
+	if (ret < 0) {
+		rt_dev_close(sockfd);
+		rtapi_print_msg(RTAPI_MSG_ERR,
+			"RT-8p8c: Connecting to remote failed with error %d\n", ret);
+		return ret;
+	}
+	return 0;
 }
 
-FUNCTION(write) {
 
-	static long old_dtns = 0;	/* update_freq funct period in nsec */	
-	static double dt = 0;		/* update_freq period in seconds */
-	static double recip_dt = 0;	/* recprocal of period, avoids divides */
-	static u32 old_stepwidth [4]	= {0};	/* used to detect parameter changes */
-	static u32 old_stepspace [4]	= {0};
-	static u32 old_dirhold [4]	= {0};
-	static u32 old_dirsetup [4]	= {0};
-	static u32 old_replydly 	= 0;
-	static int printed_error [4]	= {0};	/* flag to avoid repeated printing */	
-	static double old_vel[4]	= {0};
-	
-	cmd_data_t cmdbuf = {">CMD",{0}};
-	cfg_data_t cfgbuf = {">CFG",{0}};
-	int ret = 0;
-	int i;
-	
-	int send_cfg = 0;
+EXTRA_CLEANUP()
+{
+	if (!(sockfd < 0))
+		rt_dev_close(sockfd);
+}
 
+FUNCTION(stepgen)
+{
 	long min_step_period;
 	double max_vel, desired_vel, max_accl, vel_cmd, dv, new_vel;
+	int i;
 
-	
-	/* now recalc constants related to the period of this funct */
-	/* only recalc constants if period changes */
-	if (period != old_dtns) {
-		/* get ready to detect future period changes */
-		old_dtns = period;
-		/* dT is the period of this thread, 
-		   used for the position loop */
-		dt = period * 0.000000001;
-		/* calc the reciprocal once here, 
-		   to avoid multiple divides later */
-		recip_dt = 1.0 / dt;
-	}
-
-	if ( replydly != old_replydly ) {
-		/* must be non-zero */
-		if ( replydly == 0 ) {
-			replydly = 1;
-		}
-		old_replydly = replydly;
-		
-		// update config data
-		send_cfg = 1;
-	}
-
-	/* loop thru generators */
-	for (i=0; i<MAXGEN; i++) {
-
-		/* process timing parameters */	
-		if ( _stepwidth(i) != old_stepwidth[i] ) {
-			/* must be non-zero */
-			if ( _stepwidth(i) == 0 ) {
-				_stepwidth(i) = 1;
-			}
-			old_stepwidth[i] = _stepwidth(i);
-			
-			// update config data
-			send_cfg = 1;
-		}
-	
-		if ( _stepspace(i) != old_stepspace[i] ) {
-			/* must be non-zero */
-			if ( _stepspace(i) == 0 ) {
-				_stepspace(i) = 1;
-			}
-			old_stepspace[i] = _stepspace(i);
-		}
-
-		if ( _dirsetup(i) != old_dirsetup[i] ) {
-			/* must be non-zero */
-			if ( _dirsetup(i) == 0 ) {
-				_dirsetup(i) = 1;
-			}
-			old_dirsetup[i] = _dirsetup(i);
-			
-			// update config data
-			send_cfg = 1;
-		}
-	
-		if ( _dirhold(i) != old_dirhold[i] ) {
-			/* must be non-zero */
-			if ( _dirhold(i) == 0 ) {
-				_dirhold(i) = 1;
-			}
-			old_dirhold[i] = _dirhold(i);
-			
-			// update config data
-			send_cfg = 1;
-		}
-		
-		// skip and send config
-		if (send_cfg) continue;
+	for (i = 0; (i < MAXGEN) && do_stepgen; i++) {
 
 		/* test for disabled stepgen */
 		if (!_enable(i)) {
 			/* set velocity to zero */
-			cmdbuf.velocity[i] = 0;
+			update_velocity(i, 0);
 			continue;
 		}
 
 		/* calculate velocity limit */
 		min_step_period = _stepwidth(i) + _stepspace(i);
 		max_vel = 1.0 / (min_step_period * 0.00001);
-		
+
 		/* check for user specified velocity limit parameter */
 		if (_maxvel(i) <= 0.0) {
 			/* set to zero if negative */
@@ -288,13 +372,18 @@ FUNCTION(write) {
 			desired_vel = _maxvel(i) * fabs(_scale(i));
 			if (desired_vel > max_vel) {
 				/* parameter is too high, complain about it */
-				if(!printed_error[i]) {
+				if (!printed_error[i]) {
 					rtapi_print_msg(RTAPI_MSG_ERR,
-						"RT-8p8c: Channel %d: The requested maximum velocity of %d steps/sec is too high.\n",
-						i, (int)desired_vel);
+							"RT-8p8c: Channel %d: "
+							"The requested maximum "
+							"velocity of %d steps/sec"
+							" is too high.\n",
+							i, (int)desired_vel);
 					rtapi_print_msg(RTAPI_MSG_ERR,
-						"RT-8p8c: The maximum possible frequency is %d steps/second\n",
-						(int)max_vel);
+							"RT-8p8c: The maximum "
+							"possible frequency is "
+							"%d steps/second\n",
+							(int)max_vel);
 					printed_error[i] = 1;
 				}
 				/* parameter is too high, limit it */
@@ -304,11 +393,11 @@ FUNCTION(write) {
 				max_vel = _maxvel(i) * fabs(_scale(i));
 			}
 		}
-	
+
 		/* set internal accel limit to its absolute max, which is
 		   zero to full speed in one thread period */
 		max_accl = max_vel * recip_dt;
-		
+
 		/* check for user specified accel limit parameter */
 		if (_maxaccel(i) <= 0.0) {
 			/* set to zero if negative */
@@ -323,11 +412,7 @@ FUNCTION(write) {
 				max_accl = _maxaccel(i) * fabs(_scale(i));
 			}
 		}
-	
-		/* at this point, all scaling, limits, and other parameter
-		   changes have been handled - time for the main control */
 
-		/* velocity mode is simpler */
 		/* calculate velocity command in counts/sec */
 		vel_cmd = _velocity_cmd(i) * _scale(i);
 
@@ -342,112 +427,222 @@ FUNCTION(write) {
 		dv = max_accl * dt;
 
 		/* apply accel limit */
-		if ( vel_cmd > (old_vel[i] + dv) ) {
+		if (vel_cmd > (old_vel[i] + dv)) {
 			new_vel = old_vel[i] + dv;
-		} else if ( vel_cmd < (old_vel[i] - dv) ) {
+		} else if (vel_cmd < (old_vel[i] - dv)) {
 			new_vel = old_vel[i] - dv;
 		} else {
 			new_vel = vel_cmd;
 		}
-	
-		/* end of velocity mode */
-		
+
 		old_vel[i] = new_vel;
 		/* calculate new velocity cmd */
-		cmdbuf.velocity[i] = new_vel * VELSCALE;
+		update_velocity(i, (new_vel * VELSCALE));
 	}
-	/* done, now send the data */
 
-	if (send_cfg) {
-		for (i=0; i<MAXGEN; i++) {
-			cfgbuf.stpwdth[i] = _stepwidth(i);
-			cfgbuf.dirsetp[i] = _dirsetup(i);
-			cfgbuf.dirhold[i] = _dirhold(i);
-			cfgbuf.delay = replydly;
+	if (do_stepgen)
+		send_cmd();
+}
+FUNCTION(read)
+{
+	if (do_read) {
+		memset(&rxbuf, 0, sizeof(rxbuf));
+		/* Block until packet is received. */
+		rx_ret = rt_dev_recv(sockfd, (void*)&rxbuf, sizeof(rxbuf), 0);
+
+		if (rx_ret == -ETIMEDOUT) {
+			/* ignore error during auto-delay routine */
+			if (supervisor_state > SETREPLYDELAY) {
+				rtapi_print_msg(RTAPI_MSG_ERR,
+					"RT-8p8c: Receive timeout!\n");
+			}
+		} else if(rx_ret < 0) {
+			rtapi_print_msg(RTAPI_MSG_ERR,
+				"RT-8p8c: Receive error: %d\n", rx_ret);
 		}
-		send_cfg = 0;
-		ret = rt_dev_send(sockfd, (void*)&cfgbuf, sizeof(cfgbuf), 0);
-	} else {
-		ret = rt_dev_send(sockfd, (void*)&cmdbuf, sizeof(cmdbuf), 0);
 	}
-
-	if(ret < 0)
-		rtapi_print_msg(RTAPI_MSG_ERR, 
-			"RT-8p8c: Transmit error number: %d\n", ret);
-	
 }
 
-EXTRA_SETUP() {
+FUNCTION(write)
+{
+	if (do_write) {
+		if (txsize) {
+			tx_ret = rt_dev_send(sockfd, txbuf, txsize, 0);
 
-	int ret    = 0;
-	int64_t timeout = RCV_TIMEOUT;
-	int port;
-
-	// Set address structures to zero.  
-	memset(&local_addr, 0, sizeof(struct sockaddr_in));
-	memset(&server_addr, 0, sizeof(struct sockaddr_in));
-	
-	// Set address information structures
-	local_addr.sin_family		= AF_INET;
-	local_addr.sin_addr.s_addr	= INADDR_ANY;
-
-	server_addr.sin_family		= AF_INET;
-	server_addr.sin_addr.s_addr	= rt_inet_aton(CLIENT_IP);
-	server_addr.sin_port		= htons(UDP_PORT);
-
-	// Create new socket. 
-	sockfd = rt_dev_socket(AF_INET, SOCK_DGRAM, 0);
-	if (sockfd < 0) {
-		rtapi_print_msg(RTAPI_MSG_ERR, 
-			"RT-8p8c: Error opening socket: %d\n", sockfd);
-		return -1;
-	}
-
-	// Set timeout for socket in blocking mode
-	ret = rt_dev_ioctl(sockfd, RTNET_RTIOC_TIMEOUT, &timeout);
-	if (ret < 0) {
-		rtapi_print_msg(RTAPI_MSG_ERR, 
-			"RT-8p8c: Setting socket option failed with error %d",
-			ret);
-		return ret;
-	}
-
-	// loop if rtnet cannot bind to local port
-	port = UDPSTART;
-	do {
-		local_addr.sin_port = htons(port);
-		// Bind socket to local address. 
-		ret = rt_dev_bind(sockfd, (struct sockaddr *) &local_addr,
-				sizeof(struct sockaddr_in));
-		if (ret != 0) {
-			rtapi_print_msg(RTAPI_MSG_ERR, 
-				"RT-8p8c: Binding to socket %d failed!\n", port);
+			if(tx_ret < 0)
+				rtapi_print_msg(RTAPI_MSG_ERR,
+					"RT-8p8c: Transmit error: %d\n", tx_ret);
 		}
-		port++;
-	} while (( port != UDPMAX) && (ret == -EADDRINUSE));
-	
-	if (ret < 0) {
-		rtapi_print_msg(RTAPI_MSG_ERR, 
-			"RT-8p8c: Binding socket failed with error %d\n", ret);
-		return ret;
 	}
-	
-	// Specify destination address for socket. 
-	rt_dev_connect(sockfd, (struct sockaddr *) &server_addr,
-			sizeof(struct sockaddr_in));
-
-	return 0; 
 }
 
+FUNCTION(supervisor)
+{
+	static int	state = RST;
+	static int	count = 0, sum = 0, tmp = 0;
+	static int	rxerr = 0;
+	int		i, j;
 
-EXTRA_CLEANUP() {
+	switch (state) {
+	case RST:
+		do_read = true;
+		do_write = true;
+		do_stepgen = false;
+		ready = false;
+		send_reset();
+		state = RSTWAIT;
+		count = 0;
+		break;
+	case RSTWAIT:
+		do_read = true;
+		do_write = false;
+		if (RCV_TIMEOUT) {
+			if (count++ > TIMEOUT_RST)
+				state = RST;
+			else
+				state = RSTWAIT;
+		} else if (rcv_reply(frRST)) {
+			if (reply_delay) {
+				state = CFG;
+				goto _cfg;
+			} else {
+				state = GETCYCLETIME;
+				do_write = true;
+				send_idle();
+				count = 0;
+				sum = 0;
+				tmp = 0;
+			}
+		} else {
+			state = RST;
+		}
+		break;
+	case GETCYCLETIME:
+		do_read = true;
+		if (rcv_reply(frCMD)) {
+			/* wait until cycle period > half of thread period */
+			if (get_cycletime() > (period / 20000)) {
+				/* if the period has stabilized */
+				if (tmp < get_cycletime()) {
+					tmp = get_cycletime();
+					count = 0;
+					sum = 0;
+				} else {
+					count++;
+					sum += get_cycletime();
+				}
+				/* get the average of 32 readings */
+				if (count == 32) {
+					state = SETREPLYDELAY;
+					reply_delay = sum/count - delay;
+					count = 0;
+					sum = 0;
+					tmp = 0;
+				}
+			}
+			send_idle();
+			do_write = true;
+		} else {
+			do_write = false;
+			rtapi_print_msg(RTAPI_MSG_ERR,
+					"RT-8p8c: Get cycle time error!\n");
+			state = RST;
+		}
+		break;
+	case SETREPLYDELAY:
+		do_read = true;
+		do_write = true;
+		if (rcv_reply(frCMD)) {
+			/* if the period has stabilized */
+			if (tmp < get_cycletime()) {
+				tmp = get_cycletime();
+				count = 0;
+			} else {
+				count++;
+			}
+			/* wait for 2 sec */
+			if (count >= (2000000000L/period)) {
+				state = CFG;
+			}
+			send_idle();
+		} else {
+			if (rx_ret == -ETIMEDOUT) {
+				reply_delay--;
+				state = SETREPLYDELAY;
+				send_idle();
+			} else {
+				do_write = false;
+				rtapi_print_msg(RTAPI_MSG_ERR,
+						"RT-8p8c: Get cycle time error!\n");
+				state = RST;
+			}
+		}
+		break;
+	case CFG:
+_cfg:		do_read = true;
+		do_write = true;
+		check_params(i, j, period);
+		send_cfg();
+		state = CFGWAIT;
+		count = 0;
+		break;
+	case CFGWAIT:
+		do_read = true;
+		do_write = false;
+		if (RCV_TIMEOUT) {
+			if (count++ > TIMEOUT_CFG)
+				state = RST;
+			else
+				state = CFGWAIT;
+		} else if (rcv_reply(frCFG)) {
+			state = TXRXREADY;
+			do_write = true;
+			send_idle();
+		} else {
+			state = RST;
+		}
+		break;
+	case TXRXREADY:
+		do_read = true;
 
-	if (!(sockfd < 0)) {
-		while (rt_dev_close(sockfd) == -EAGAIN) {
-			rtapi_print_msg(RTAPI_MSG_ERR, 
-				"RT-8p8c: Socket busy - waiting...\n");
-			set_current_state(TASK_UNINTERRUPTIBLE);
-			schedule_timeout(1*HZ); /* wait a second */
-		}	
+		if (rcv_reply(frCMD)) {
+			check_params(i, j, period);
+			if (j) {
+				/* update cfg */
+				state = CFG;
+				do_stepgen = false;
+				ready = false;
+				goto _cfg;
+			}
+			do_write = true;
+			do_stepgen = true;
+			ready = true;
+			update_output(i);
+			if (rxerr)
+				rxerr--;
+		} else if (RCV_TIMEOUT && (rxerr++ < RX_TIMEOUT)) {
+			/* allow for occassional timeouts but don't send
+			   new commands and results */
+			do_write = true;
+			do_stepgen = false;
+			send_idle();
+			rtapi_print_msg(RTAPI_MSG_ERR,
+				"This should not happen! Increase RX/TX delay\n");
+		} else {
+			do_write = false;
+			do_stepgen = false;
+			ready = false;
+			state = RST;
+		}
+		break;
+	default:
+		do_read = false;
+		do_write = false;
+		do_stepgen = false;
+		ready = false;
+		state = RST;
 	}
+
+	supervisor_state = state;
+
 }

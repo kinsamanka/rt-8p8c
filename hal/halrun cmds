@@ -1,27 +1,44 @@
-loadrt threads name1=test period1=1000000 
-loadrt siggen 
-addf siggen.0.update test
-
-loadrt rt8p8c
+loadrt threads name1=test period1=1000000
+loadrt siggen
+loadrt rt8p8c timeout=500000
 
 net X-vel siggen.0.cosine => rt8p8c.0.velocity-cmd
 net Y-vel siggen.0.sine => rt8p8c.1.velocity-cmd
-setp rt8p8c.0.maxaccel 100
-setp rt8p8c.0.maxvel 100
-setp rt8p8c.0.scale 1000
-setp rt8p8c.0.stepwidth 50
+net Z-vel siggen.0.sawtooth => rt8p8c.2.velocity-cmd
+net A-vel siggen.0.triangle => rt8p8c.3.velocity-cmd
+setp rt8p8c.0.maxaccel 1
+setp rt8p8c.0.maxvel 2
+setp rt8p8c.0.scale 10000
+setp rt8p8c.0.stepwidth 15
 setp rt8p8c.0.dirhold 1
 setp rt8p8c.0.dirsetup 1
-setp rt8p8c.1.maxaccel 100
-setp rt8p8c.1.maxvel 100
-setp rt8p8c.1.scale 1000
-setp rt8p8c.1.stepwidth 50
+setp rt8p8c.1.maxaccel 1
+setp rt8p8c.1.maxvel 2
+setp rt8p8c.1.scale 10000
+setp rt8p8c.1.stepwidth 15
 setp rt8p8c.1.dirhold 1
 setp rt8p8c.1.dirsetup 1
+setp rt8p8c.2.maxaccel 1
+setp rt8p8c.2.maxvel 2
+setp rt8p8c.2.scale 10000
+setp rt8p8c.2.stepwidth 15
+setp rt8p8c.2.dirhold 1
+setp rt8p8c.2.dirsetup 1
+setp rt8p8c.3.maxaccel 1
+setp rt8p8c.3.maxvel 2
+setp rt8p8c.3.scale 10000
+setp rt8p8c.3.stepwidth 15
+setp rt8p8c.3.dirhold 1
+setp rt8p8c.3.dirsetup 1
 setp rt8p8c.0.enable 1
 setp rt8p8c.1.enable 1
-setp rt8p8c.replydly 1
+setp rt8p8c.2.enable 1
+setp rt8p8c.3.enable 1
+
 addf rt8p8c.read test
+addf rt8p8c.supervisor test
+addf siggen.0.update test
+addf rt8p8c.stepgen test
 addf rt8p8c.write test
 start
 
