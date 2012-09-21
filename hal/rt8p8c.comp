@@ -97,7 +97,7 @@ author "GP Orcullo";
 
 #define TX_TIMEOUT	2
 #define RX_TIMEOUT	1
-#define RXTXDELAY	15		/* Total rx + tx time in 10us */
+#define RXTXDELAY	20		/* Total rx + tx time in 10us */
 #define UDP_RPORT	8888
 #define UDP_LPORT	9999
 #define CLIENT_IP	"10.0.0.2"
