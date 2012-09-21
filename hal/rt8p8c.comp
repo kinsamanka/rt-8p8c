@@ -239,7 +239,7 @@ author "GP Orcullo";
 		}								\
 	} while (0)
 
-#define update_output(a)								\
+#define update_output(a)							\
 	do {									\
 		for (a = 0; a < 4; a++) {					\
 			_counts(a) = get_position(a) >> STEPBIT;		\
@@ -247,6 +247,19 @@ author "GP Orcullo";
 						* scale_inv[i];			\
 		}								\
 		cycle_time = get_cycletime();					\
+	} while (0)
+
+#define print_rst_error(a, max)							\
+	do {									\
+		if (a++ == 0) {							\
+			rtapi_print_msg(RTAPI_MSG_ERR, "RT-8p8c: Reset error\n");\
+		} else if (a == (max + 1)) {					\
+			rtapi_print_msg(RTAPI_MSG_ERR,				\
+				"RT-8p8c: Reset error occured for more than "	\
+				"%d times\n", max);				\
+		} else if (a > max) {						\
+			a = max + 2;						\
+		}								\
 	} while (0)
 
 #endif
@@ -454,7 +467,7 @@ FUNCTION(read)
 			/* ignore error during auto-delay routine */
 			if (supervisor_state > SETREPLYDELAY) {
 				rtapi_print_msg(RTAPI_MSG_ERR,
-					"RT-8p8c: Receive timeout!\n");
+					"RT-8p8c: Receive timeout\n");
 			}
 		} else if(rx_ret < 0) {
 			rtapi_print_msg(RTAPI_MSG_ERR,
@@ -471,7 +484,8 @@ FUNCTION(write)
 
 			if(tx_ret < 0)
 				rtapi_print_msg(RTAPI_MSG_ERR,
-					"RT-8p8c: Transmit error: %d\n", tx_ret);
+					"RT-8p8c: Transmit error: %d\n"
+					, tx_ret);
 		}
 	}
 }
@@ -480,7 +494,7 @@ FUNCTION(supervisor)
 {
 	static int	state = RST;
 	static int	count = 0, sum = 0, tmp = 0;
-	static int	rxerr = 0;
+	static int	rxerr = 0, rstcount = 0;
 	int		i, j;
 
 	switch (state) {
@@ -497,11 +511,14 @@ FUNCTION(supervisor)
 		do_read = true;
 		do_write = false;
 		if (RCV_TIMEOUT) {
-			if (count++ > TIMEOUT_RST)
+			if (count++ > TIMEOUT_RST) {
 				state = RST;
-			else
+				print_rst_error(rstcount, 5);
+			} else {
 				state = RSTWAIT;
+			}
 		} else if (rcv_reply(frRST)) {
+			rstcount = 0;		/* reset error counter */
 			if (reply_delay) {
 				state = CFG;
 				goto _cfg;
@@ -515,6 +532,7 @@ FUNCTION(supervisor)
 			}
 		} else {
 			state = RST;
+			print_rst_error(rstcount, 5);
 		}
 		break;
 	case GETCYCLETIME:
@@ -545,7 +563,7 @@ FUNCTION(supervisor)
 		} else {
 			do_write = false;
 			rtapi_print_msg(RTAPI_MSG_ERR,
-					"RT-8p8c: Get cycle time error!\n");
+					"RT-8p8c: Get cycle time error\n");
 			state = RST;
 		}
 		break;
@@ -573,7 +591,8 @@ FUNCTION(supervisor)
 			} else {
 				do_write = false;
 				rtapi_print_msg(RTAPI_MSG_ERR,
-						"RT-8p8c: Get cycle time error!\n");
+						"RT-8p8c: Auto reply delay "
+						"error\n");
 				state = RST;
 			}
 		}
@@ -600,6 +619,9 @@ _cfg:		do_read = true;
 			send_idle();
 		} else {
 			state = RST;
+			rtapi_print_msg(RTAPI_MSG_ERR,
+				"RT-8p8c: Sending config failed, "
+				"performing reset\n");
 		}
 		break;
 	case TXRXREADY:
@@ -627,8 +649,10 @@ _cfg:		do_read = true;
 			do_stepgen = false;
 			send_idle();
 			rtapi_print_msg(RTAPI_MSG_ERR,
-				"This should not happen! Increase RX/TX delay\n");
+				"RT-8p8c: Increase RX/TX delay or RX timeout\n");
 		} else {
+			rtapi_print_msg(RTAPI_MSG_ERR,
+				"RT-8p8c: Too many timeouts, performing reset\n");
 			do_write = false;
 			do_stepgen = false;
 			ready = false;
