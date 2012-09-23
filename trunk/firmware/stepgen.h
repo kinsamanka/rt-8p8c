@@ -1,5 +1,5 @@
 /*    Copyright (C) 2012 GP Orcullo
- *    
+ *
  *    This file is part of rt-8p8c, an ethernet based interface for LinuxCNC.
  *
  *    This program is free software; you can redistribute it and/or modify
@@ -33,16 +33,16 @@ int stepgen_update_input(const void *buf);
   STEP	   ___/    \__________/    \___
   	   ___________
   DIR	              \________________
-		
-  stepwdth    |<-->|          |   
-  stepspace   |    |<-------->|   
+
+  stepwdth    |<-->|          |
+  stepspace   |    |<-------->|
   dir_hold    |<----->|       |
   dirsetup    |       |<----->|
-	     
+
 */
 
 typedef struct {
-	int32_t delay, velocity[MAXGEN];
+	int32_t delay, velocity[MAXGEN], pwmval, io_tris, io_lat;
 } stepgen_input_struct;
 
 typedef struct {

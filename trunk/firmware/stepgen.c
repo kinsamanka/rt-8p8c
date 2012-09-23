@@ -1,9 +1,9 @@
 /*    Copyright (C) 2012 GP Orcullo
- *    
+ *
  *    This file is part of rt-8p8c, an ethernet based interface for LinuxCNC.
  *
- *    This step generator code is largely based on stepgen.c 
- *    by John Kasunich, Copyright (C) 2003-2007 
+ *    This step generator code is largely based on stepgen.c
+ *    by John Kasunich, Copyright (C) 2003-2007
  *
  *    This program is free software; you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
@@ -38,24 +38,24 @@
   STEP	   ___/    \__________/    \___
   	   ___________
   DIR	              \________________
-		
-  stepwdth    |<-->|          |   
-  stepspace   |    |<-------->|   
+
+  stepwdth    |<-->|          |
+  stepspace   |    |<-------->|
   dir_hold    |<----->|       |
   dirsetup    |       |<----->|
-	     
+
 */
 
-static int stepwdth[MAXGEN] = { 0 }, 
-           dirsetup[MAXGEN] = { 0 }, 
+static int stepwdth[MAXGEN] = { 0 },
+           dirsetup[MAXGEN] = { 0 },
 	   dir_hold[MAXGEN] = { 0 };
 
 static volatile int32_t position[MAXGEN] = { 0 };
 
-static int32_t oldpos[MAXGEN] = { 0 }, 
+static int32_t oldpos[MAXGEN] = { 0 },
 	       oldvel[MAXGEN] = { 0 };
 
-static volatile stepgen_input_struct stepgen_input = { 0, {0} };
+static volatile stepgen_input_struct stepgen_input = { 0, {0}, 0, 0, 0 };
 
 static volatile stepgen_config_struct stepgen_config = {
 	{1, 1, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}
@@ -66,6 +66,9 @@ static int start_cycle_timer = 0;
 
 static int get_feedback(void *buf)
 {
+	unsigned int i,j;
+	int32_t x;
+
 	/* wait for reply delay */
 	while (stepgen_input.delay);
 
@@ -73,9 +76,12 @@ static int get_feedback(void *buf)
 	asm volatile ("di");
 	asm volatile ("ehb");
 
-	memcpy(buf, (const void *)&cycle_time, sizeof(cycle_time));
-	memcpy(buf + sizeof(cycle_time)
-		, (const void *)position, sizeof(position));
+	i = sizeof(cycle_time);
+	memcpy(buf, (const void *)&cycle_time, i);
+	j = i;
+	i = sizeof(position);
+	memcpy(buf + j, (const void *)position, i);
+	read_io(x);
 
 	cycle_time = 0;
 	start_cycle_timer = 1;
@@ -83,7 +89,12 @@ static int get_feedback(void *buf)
 	/* enable interrupts */
 	asm volatile ("ei");
 
-	return sizeof(position) + sizeof(cycle_time);
+	j += i;
+	i = sizeof(int32_t);
+	memcpy(buf + j, (const void *)&x, i);
+	j += i;
+
+	return j;
 }
 
 void stepgen_update_config(const void *buf)
@@ -110,6 +121,12 @@ int stepgen_update_input(const void *buf)
 	/* enable interrupts */
 	asm volatile ("ei");
 
+	/* update PWM */
+	// TODO
+
+	/* update I/O ports */
+	update_io(stepgen_input.io_tris, stepgen_input.io_lat);
+
 	return get_feedback((void *)buf) + 4;
 }
 
@@ -132,6 +149,12 @@ void stepgen_reset(void)
 		stepgen_input.velocity[i] = 0;
 	}
 
+	start_cycle_timer = 0;
+	cycle_time = 0;
+
+	/* enable interrupts */
+	asm volatile ("ei");
+
 	DIR_LO_X;
 	DIR_LO_Y;
 	DIR_LO_Z;
@@ -141,12 +164,8 @@ void stepgen_reset(void)
 	STEPLO_Y;
 	STEPLO_Z;
 	STEPLO_A;
-	
-	start_cycle_timer = 0;
-	cycle_time = 0;
 
-	/* enable interrupts */
-	asm volatile ("ei");
+	reset_io();
 }
 
 void stepgen(void)
@@ -162,7 +181,7 @@ void stepgen(void)
 		stepgen_input.delay--;
 
 	for (i = 0; i < 4; i++) {
-		/* direction setup counter checks if 
+		/* direction setup counter checks if
 		   a step pulse can be generated */
 		if (dirsetup[i])
 			dirsetup[i]--;
@@ -172,7 +191,7 @@ void stepgen(void)
 		/* don't update position counter if dirsetup[i] <> 0
 		   and a step pulse is ready to be generated
 		   (stretch the step-low period) */
-		if (!(dirsetup[i] && stepready)) 
+		if (!(dirsetup[i] && stepready))
 			position[i] += stepgen_input.velocity[i];
 
 		/* generate a pulse only if dirsetup[i] == 0 */
@@ -183,7 +202,7 @@ void stepgen(void)
 			// start direction hold counter
 			dir_hold[i] = stepgen_config.dirhold[i];
 		}
-		/* direction hold counter checks if 
+		/* direction hold counter checks if
 		   a direction change is allowed */
 		if (dir_hold[i])
 			dir_hold[i]--;
