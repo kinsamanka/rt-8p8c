@@ -1,5 +1,5 @@
 /*    Copyright (C) 2012 GP Orcullo
- *    
+ *
  *    This file is part of rt-8p8c, an ethernet based interface for LinuxCNC.
  *
  *    This program is free software; you can redistribute it and/or modify
@@ -69,11 +69,14 @@ clock_time_t clock_time(void)
 
 void init_io_ports()
 {
+	/* disable all analog pins */
+	AD1PCFG = 0xFFFF;
+
 	LED0_TRIS = 0;
 	LED0_IO = 0;
 
-	DO0_TRIS = 0;
-	DO0_IO = 0;
+	// TODO, PWM
+	OpenOC1(OC_OFF | OC_TIMER_MODE16 | OC_TIMER3_SRC | OC_PWM_FAULT_PIN_DISABLE, 0,0);
 
 	/* configure step and dir pins
 	   enable open collector */
@@ -86,7 +89,6 @@ void init_io_ports()
 	TRISFCLR = BIT_4;
 	ODCFSET = BIT_4;
 
-	// TODO: configure 3.3v I/O pins
 }
 
 int main(void)
@@ -108,7 +110,7 @@ int main(void)
 	/* configure the core timer roll-over rate */
 	OpenCoreTimer(CORE_TICK_RATE);
 
-	/* set up the core timer interrupt with a priority of 7 
+	/* set up the core timer interrupt with a priority of 7
 	   and zero sub-priority */
 	mConfigIntCoreTimer((CT_INT_ON | CT_INT_PRIOR_7 | CT_INT_SUB_PRIOR_0));
 
@@ -141,8 +143,8 @@ int main(void)
 			if (BUF->type == htons(UIP_ETHTYPE_IP)) {
 				uip_arp_ipin();
 				uip_input();
-				/* If the above function invocation resulted 
-				   in data that should be sent out on the 
+				/* If the above function invocation resulted
+				   in data that should be sent out on the
 				   network, the global variable
 				   uip_len is set to a value > 0. */
 				if (uip_len > 0) {
@@ -151,8 +153,8 @@ int main(void)
 				}
 			} else if (BUF->type == htons(UIP_ETHTYPE_ARP)) {
 				uip_arp_arpin();
-				/* If the above function invocation resulted 
-				   in data that should be sent out on the 
+				/* If the above function invocation resulted
+				   in data that should be sent out on the
 				   network, the global variable
 				   uip_len is set to a value > 0. */
 				if (uip_len > 0)
@@ -171,8 +173,8 @@ int main(void)
 
 			for (i = 0; i < UIP_UDP_CONNS; i++) {
 				uip_udp_periodic(i);
-				/* If the above function invocation resulted 
-				   in data that should be sent out on the 
+				/* If the above function invocation resulted
+				   in data that should be sent out on the
 				   network, the global variable
 				   uip_len is set to a value > 0. */
 				if (uip_len > 0) {

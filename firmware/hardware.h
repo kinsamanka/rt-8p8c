@@ -1,5 +1,5 @@
 /*    Copyright (C) 2012 GP Orcullo
- *    
+ *
  *    This file is part of rt-8p8c, an ethernet based interface for LinuxCNC.
  *
  *    This program is free software; you can redistribute it and/or modify
@@ -59,5 +59,28 @@
 
 #define DIR_HI_PWM			(LATFSET = BIT_4)
 #define DIR_LO_PWM			(LATFCLR = BIT_4)
+
+/* configure i/o pins as inputs */
+#define reset_io()								\
+	do {									\
+		/* IO_00 to IO_14 */						\
+		TRISBSET = 0x7FFF;						\
+		/* IO_15 */							\
+		TRISCSET = BIT_13;						\
+	} while (0)
+
+#define update_io(iotris, iolat)						\
+	do {									\
+		TRISB =  (TRISB & 0x8000) | (0x7FFF & (iotris));		\
+		LATB  =  (LATB  & 0x8000) | (0x7FFF & (iolat));			\
+		TRISC =  (TRISC & 0xDFFF) | (0x2000 & ((iotris) >> 2));		\
+		LATC  =  (LATC  & 0xDFFF) | (0x2000 & ((iolat)  >> 2));		\
+	} while (0)
+
+#define read_io(a)								\
+	do {									\
+		(a) = PORTB & 0x7FFF;						\
+		(a) |= (PORTC & 0x2000) << 2;					\
+	} while (0)
 
 #endif				/* __HARDWARE_H__ */
