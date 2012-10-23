@@ -48,7 +48,8 @@
 
 static int stepwdth[MAXGEN] = { 0 },
            dirsetup[MAXGEN] = { 0 },
-	   dir_hold[MAXGEN] = { 0 };
+	   dir_hold[MAXGEN] = { 0 },
+	     olddir[MAXGEN] = { 0 };
 
 static volatile int32_t position[MAXGEN] = { 0 };
 
@@ -207,35 +208,33 @@ void stepgen(void)
 		if (dir_hold[i])
 			dir_hold[i]--;
 		else {
-
-			/* check for direction change */
-			if ((stepgen_input.velocity[i] ^ oldvel[i]) & DIR_MASK) {
-				oldvel[i] = stepgen_input.velocity[i];
-				/* direction setup counter */
-				dirsetup[i] = stepgen_config.dirsetp[i];
-
-				if (stepgen_input.velocity[i] > 0) {
-					if (i == 0)
-						DIR_LO_X;
-					if (i == 1)
-						DIR_LO_Y;
-					if (i == 2)
-						DIR_LO_Z;
-					if (i == 3)
-						DIR_LO_A;
-				} else if (stepgen_input.velocity[i] < 0) {
-					if (i == 0)
-						DIR_HI_X;
-					if (i == 1)
-						DIR_HI_Y;
-					if (i == 2)
-						DIR_HI_Z;
-					if (i == 3)
-						DIR_HI_A;
-				} else {
-					/* don't change direction if
-					   velocity is 0 */
-					dirsetup[i] = 0;
+			if (stepgen_input.velocity[i] > 0) {
+				if (i == 0)
+					DIR_LO_X;
+				if (i == 1)
+					DIR_LO_Y;
+				if (i == 2)
+					DIR_LO_Z;
+				if (i == 3)
+					DIR_LO_A;
+				
+				if (olddir[i] != 0) {
+					dirsetup[i] = stepgen_config.dirsetp[i];
+					olddir[i] = 0;
+				}
+			} else if (stepgen_input.velocity[i] < 0) {
+				if (i == 0)
+					DIR_HI_X;
+				if (i == 1)
+					DIR_HI_Y;
+				if (i == 2)
+					DIR_HI_Z;
+				if (i == 3)
+					DIR_HI_A;
+				
+				if (olddir[i] == 0) {
+					dirsetup[i] = stepgen_config.dirsetp[i];
+					olddir[i] = 1;
 				}
 			}
 		}
