@@ -51,10 +51,10 @@ static int stepwdth[MAXGEN] = { 0 },
 	   dir_hold[MAXGEN] = { 0 },
 	     olddir[MAXGEN] = { 0 };
 
-static volatile int32_t position[MAXGEN] = { 0 };
+static volatile uint32_t position[MAXGEN] = { 0 };
 
-static int32_t oldpos[MAXGEN] = { 0 },
-	       oldvel[MAXGEN] = { 0 };
+static uint32_t oldpos[MAXGEN] = { 0 };
+static int32_t oldvel[MAXGEN] = { 0 };
 
 static volatile stepgen_input_struct stepgen_input = { 0, {0}, 0, 0, 0 };
 
@@ -198,9 +198,9 @@ void stepgen(void)
 		/* generate a pulse only if dirsetup[i] == 0 */
 		if (!dirsetup[i] && stepready) {
 			oldpos[i] = position[i];
-			// start step width counter
+			/* start step width counter */
 			stepwdth[i] = stepgen_config.stpwdth[i];
-			// start direction hold counter
+			/* start direction hold counter */
 			dir_hold[i] = stepgen_config.dirhold[i];
 		}
 		/* direction hold counter checks if
