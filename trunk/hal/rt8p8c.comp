@@ -27,6 +27,8 @@ description """
 """;
 
 pin in float	#.velocity-cmd[4] = 0.0 "Desired motor velocity";
+pin in float	#.position-cmd[4] = 0.0 "Desired motor position";
+
 pin in bit	#.enable[4]	= 0;
 pin in bit	pin.##.out[16]	= 0	"Digital output";
 pin out bit	pin.##.in[16]	= 0	"Digital inputs";
@@ -46,9 +48,10 @@ param rw u32	#.dirhold[4]	= 1	"Minimum time from the beginning of a step pulse t
 param rw float	#.scale[4]	= 1.0	"Steps per position unit.";
 param rw float	#.maxvel[4]	= 1.0	"Maximum velocity";
 param rw float	#.maxaccel[4]	= 1.0	"Maximum acceleration";
+param rw bit	#.mode[4]	= 0	"Velocity/Position Mode (true = Position Mode)";
 param rw bit	pin.##.dir[16]	= 1	"Digital IO direction (true = input)";
 
-variable s32 txbuf[16]		= 0;
+variable u32 txbuf[16]		= 0;
 variable u32 txsize		= 0;
 variable int tx_ret		= 0;
 
@@ -70,6 +73,10 @@ variable u32 old_dirsetup[4]	= 0;
 variable double old_vel[4]	= 0;
 variable double old_scale[4]	= 0;
 variable int printed_error[4]	= 0;	/* flag to avoid repeated printing */
+variable double old_pos[4]	= 0;
+variable s32 old_count[4]	= 0;
+variable int64_t accum[4]	= 0;
+variable s32 accum_diff		= 0;
 
 option singleton;
 option extra_setup;
@@ -134,10 +141,9 @@ author "GP Orcullo";
    this is an ugly hack!
 */
 #if 1
+
 #define update_velocity(a, b)							\
 	(txbuf[2 + (a)] = (b))
-
-//#define swap(a,b) 	((a) ^= (b) ^= (a) ^= (b))
 
 /* the pin port numbering is different to the physical pinout */
 #define pin2int(a, b)								\
@@ -163,30 +169,39 @@ author "GP Orcullo";
 
 #define int2pin(a, b)								\
 	do {									\
-		b(0)  = ((a) & (1 << 3 )) ? true : false;				\
-		b(1)  = ((a) & (1 << 4 )) ? true : false;				\
-		b(2)  = ((a) & (1 << 2 )) ? true : false;				\
-		b(3)  = ((a) & (1 << 0 )) ? true : false;				\
-		b(4)  = ((a) & (1 << 1 )) ? true : false;				\
-		b(5)  = ((a) & (1 << 5 )) ? true : false;				\
-		b(6)  = ((a) & (1 << 7 )) ? true : false;				\
-		b(7)  = ((a) & (1 << 6 )) ? true : false;				\
-		b(8)  = ((a) & (1 << 8 )) ? true : false;				\
-		b(9)  = ((a) & (1 << 9 )) ? true : false;				\
-		b(10) = ((a) & (1 << 10)) ? true : false;				\
-		b(11) = ((a) & (1 << 11)) ? true : false;				\
-		b(12) = ((a) & (1 << 12)) ? true : false;				\
-		b(13) = ((a) & (1 << 13)) ? true : false;				\
-		b(14) = ((a) & (1 << 14)) ? true : false;				\
-		b(15) = ((a) & (1 << 15)) ? true : false;				\
+		b(0)  = ((a) & (1 << 3 )) ? true : false;			\
+		b(1)  = ((a) & (1 << 4 )) ? true : false;			\
+		b(2)  = ((a) & (1 << 2 )) ? true : false;			\
+		b(3)  = ((a) & (1 << 0 )) ? true : false;			\
+		b(4)  = ((a) & (1 << 1 )) ? true : false;			\
+		b(5)  = ((a) & (1 << 5 )) ? true : false;			\
+		b(6)  = ((a) & (1 << 7 )) ? true : false;			\
+		b(7)  = ((a) & (1 << 6 )) ? true : false;			\
+		b(8)  = ((a) & (1 << 8 )) ? true : false;			\
+		b(9)  = ((a) & (1 << 9 )) ? true : false;			\
+		b(10) = ((a) & (1 << 10)) ? true : false;			\
+		b(11) = ((a) & (1 << 11)) ? true : false;			\
+		b(12) = ((a) & (1 << 12)) ? true : false;			\
+		b(13) = ((a) & (1 << 13)) ? true : false;			\
+		b(14) = ((a) & (1 << 14)) ? true : false;			\
+		b(15) = ((a) & (1 << 15)) ? true : false;			\
 	} while (0)
+
+/* the DDS uses 32 bit counter, this code converts that counter into 64 bits */
+#define update_accum()								\
+	do {									\
+		for (i = 0; i < MAXGEN; i++) {					\
+			accum_diff = get_position(i) - old_count[i];		\
+			old_count[i] = get_position(i);				\
+			accum[i] += accum_diff;					\
+		}								\
+	} while (0)	
 
 #define update_output()								\
 	do {									\
 		for (i = 0; i < MAXGEN; i++) {					\
-			_counts(i) = get_position(i) >> STEPBIT;		\
-			_position_fb(i) = (float)(get_position(i))		\
-						* scale_inv[i];			\
+			_counts(i) = accum[i] >> STEPBIT;			\
+			_position_fb(i) = (float)(accum[i]) * scale_inv[i];	\
 		}								\
 		int2pin(get_port_inp(), pin_in);				\
 		port_input = get_port_inp();					\
@@ -422,6 +437,7 @@ FUNCTION(stepgen)
 {
 	long min_step_period;
 	double max_vel, desired_vel, max_accl, vel_cmd, dv, new_vel;
+	double dp, pos_cmd, curr_pos, match_accl, match_time, avg_v, est_out, est_cmd, est_err;
 	int i;
 
 	for (i = 0; (i < MAXGEN) && do_stepgen; i++) {
@@ -487,26 +503,89 @@ FUNCTION(stepgen)
 			}
 		}
 
-		/* calculate velocity command in counts/sec */
-		vel_cmd = _velocity_cmd(i) * _scale(i);
+ 
+		if (_mode(i) == 0) {
+			/* calculate velocity command in counts/sec */
+			vel_cmd = _velocity_cmd(i) * _scale(i);
 
-		/* apply frequency limit */
-		if (vel_cmd > max_vel) {
-			vel_cmd = max_vel;
-		} else if (vel_cmd < -max_vel) {
-			vel_cmd = -max_vel;
-		}
+			/* apply frequency limit */
+			if (vel_cmd > max_vel) {
+				vel_cmd = max_vel;
+			} else if (vel_cmd < -max_vel) {
+				vel_cmd = -max_vel;
+			}
 
-		/* calc max change in frequency in one period */
-		dv = max_accl * dt;
+			/* calc max change in frequency in one period */
+			dv = max_accl * dt;
 
-		/* apply accel limit */
-		if (vel_cmd > (old_vel[i] + dv)) {
-			new_vel = old_vel[i] + dv;
-		} else if (vel_cmd < (old_vel[i] - dv)) {
-			new_vel = old_vel[i] - dv;
+			/* apply accel limit */
+			if (vel_cmd > (old_vel[i] + dv)) {
+				new_vel = old_vel[i] + dv;
+			} else if (vel_cmd < (old_vel[i] - dv)) {
+				new_vel = old_vel[i] - dv;
+			} else {
+				new_vel = vel_cmd;
+			}
 		} else {
-			new_vel = vel_cmd;
+			/* calculate position command in counts */
+			pos_cmd = _position_cmd(i) * _scale(i);
+			/* calculate velocity command in counts/sec */
+			vel_cmd = (pos_cmd - old_pos[i]) * recip_dt;
+			old_pos[i] = pos_cmd;
+			
+			curr_pos = (double)(accum[i]) * (1.0 / (1L << STEPBIT));
+
+			/* determine which way we need to ramp to match velocity */
+			if (vel_cmd > old_vel[i])
+				match_accl = max_accl;
+			else 
+				match_accl = -max_accl;
+			
+			/* determine how long the match would take */
+			match_time = (vel_cmd - old_vel[i]) / match_accl;
+			/* calc output position at the end of the match */
+			avg_v = (vel_cmd + old_vel[i]) * 0.5;
+			est_out = curr_pos + avg_v * match_time;
+			/* calculate the expected command position at that time */
+			est_cmd = pos_cmd + vel_cmd * (match_time - 1.5 * dt);
+			/* calculate error at that time */
+			est_err = est_out - est_cmd;
+
+			if (match_time < dt) {
+				/* we can match velocity in one period */
+				if (fabs(est_err) < 0.0001) {
+					/* after match the position error will be acceptable */
+					/* so we just do the velocity match */
+					new_vel = vel_cmd;
+				} else {
+					/* try to correct position error */
+					new_vel = vel_cmd - 0.5 * est_err * recip_dt;
+					/* apply accel limits */
+					if (new_vel > (old_vel[i] + max_accl * dt)) {
+						new_vel = old_vel[i] + max_accl * dt;
+					} else if (new_vel < (old_vel[i] - max_accl * dt)) {
+						new_vel = old_vel[i] - max_accl * dt;
+					}
+				}
+			} else {
+				/* calculate change in final position if we ramp in the
+				opposite direction for one period */
+				dv = -2.0 * match_accl * dt;
+				dp = dv * match_time;
+				/* decide which way to ramp */
+				if (fabs(est_err + dp * 2.0) < fabs(est_err)) {
+					match_accl = -match_accl;
+				}
+				/* and do it */
+				new_vel = old_vel[i] + match_accl * dt;
+			}
+			
+			/* apply frequency limit */
+			if (vel_cmd > max_vel) {
+				vel_cmd = max_vel;
+			} else if (vel_cmd < -max_vel) {
+				vel_cmd = -max_vel;
+			}
 		}
 
 		old_vel[i] = new_vel;
@@ -517,6 +596,7 @@ FUNCTION(stepgen)
 	if (do_stepgen)
 		send_cmd();
 }
+
 FUNCTION(read)
 {
 	if (do_read) {
@@ -700,6 +780,7 @@ _cfg:		do_read = true;
 			do_write = true;
 			do_stepgen = true;
 			ready = true;
+			update_accum();
 			update_output();
 			if (rxerr)
 				rxerr--;
